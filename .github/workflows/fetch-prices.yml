@@ -1,0 +1,75 @@
+name: Fetch Stock Prices
+
+on:
+  schedule:
+    # 韩股交易时段：首尔时间 09:00–15:30 = UTC 00:00–06:30
+    # 美股交易时段：纽约时间 09:30–16:00 = UTC 14:30–21:00（夏令时）
+    # 合并覆盖范围：UTC 00:00–06:30 和 UTC 14:30–21:00，每15分钟一次
+
+    # 韩股时段（UTC 00:00 - 06:30）
+    - cron: '0,15,30,45 0,1,2,3,4,5 * * 1-5'
+    - cron: '0,15 6 * * 1-5'
+
+    # 美股时段（UTC 14:30 - 21:00）
+    - cron: '30,45 14 * * 1-5'
+    - cron: '0,15,30,45 15,16,17,18,19,20 * * 1-5'
+    - cron: '0 21 * * 1-5'
+
+  workflow_dispatch:  # 保留手动触发
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fetch prices
+        run: |
+          python3 - <<'EOF'
+          import urllib.request, json, time
+
+          symbols = {
+            "hynix":   "000660.KS",
+            "samsung": "005930.KS",
+            "micron":  "MU"
+          }
+
+          result = {"updated": int(time.time()), "prices": {}}
+
+          for key, sym in symbols.items():
+            try:
+              url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
+              req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+              m = data["chart"]["result"][0]["meta"]
+              price = m["regularMarketPrice"]
+              prev  = m.get("previousClose") or m.get("chartPreviousClose") or price
+              result["prices"][key] = {
+                "price":  price,
+                "change": round(price - prev, 2),
+                "pct":    round((price - prev) / prev * 100, 2),
+                "symbol": sym
+              }
+            except Exception as e:
+              result["prices"][key] = {"error": str(e)}
+
+          with open("prices.json", "w") as f:
+            json.dump(result, f)
+
+          print(json.dumps(result, indent=2))
+          EOF
+
+      - name: Commit prices.json
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add prices.json
+          git diff --staged --quiet || git commit -m "chore: update prices $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push
